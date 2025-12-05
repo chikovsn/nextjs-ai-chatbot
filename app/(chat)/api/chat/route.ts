@@ -335,3 +335,29 @@ export async function DELETE(request: Request) {
 
   return Response.json(deletedChat, { status: 200 });
 }
+
+
+try {
+  const json = await request.json();
+  requestBody = postRequestBodySchema.parse(json);
+
+  const { message } = requestBody;
+
+  // -------------------------------
+  // NEW: intercept "who are you" questions
+  const lower = message.content?.toLowerCase?.() ?? "";
+  if (
+    lower.includes("who are you") ||
+    lower.includes("what is your name") ||
+    lower.includes("identify yourself") ||
+    lower.includes("introduce yourself")
+  ) {
+    return new Response(
+      JSON.stringify({ reply: "I am Sixty4." }),
+      { status: 200 }
+    );
+  }
+  // -------------------------------
+} catch (_) {
+  return new ChatSDKError("bad_request:api").toResponse();
+}
