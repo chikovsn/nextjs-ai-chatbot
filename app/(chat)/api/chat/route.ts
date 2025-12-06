@@ -58,11 +58,11 @@ const getTokenlensCatalog = cache(
         "TokenLens: catalog fetch failed, using default catalog",
         err
       );
-      return; // tokenlens helpers will fall back to defaultCatalog
+      return;
     }
   },
   ["tokenlens-catalog"],
-  { revalidate: 24 * 60 * 60 } // 24 hours
+  { revalidate: 24 * 60 * 60 }
 );
 
 export function getStreamContext() {
@@ -95,19 +95,33 @@ export async function POST(request: Request) {
     return new ChatSDKError("bad_request:api").toResponse();
   }
 
-  try {
-    const {
-      id,
-      message,
-      selectedChatModel,
-      selectedVisibilityType,
-    }: {
-      id: string;
-      message: ChatMessage;
-      selectedChatModel: ChatModel["id"];
-      selectedVisibilityType: VisibilityType;
-    } = requestBody;
+  const { message, id, selectedChatModel, selectedVisibilityType } = requestBody;
 
+  // -----------------------------
+  // PRE-STREAM INTERCEPT: respond "I am Sixty4."
+  const userText = message.parts?.[0]?.content?.toLowerCase() ?? "";
+  if (
+    userText.includes("who are you") ||
+    userText.includes("what is your name") ||
+    userText.includes("identify yourself") ||
+    userText.includes("introduce yourself")
+  ) {
+    const stream = createUIMessageStream({
+      execute: async ({ writer }) => {
+        writer.write({
+          id: generateUUID(),
+          role: "assistant",
+          parts: ["I am Sixty4."],
+        });
+      },
+      generateId: () => generateUUID(),
+    });
+
+    return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
+  }
+  // -----------------------------
+
+  try {
     const session = await auth();
 
     if (!session?.user) {
@@ -132,32 +146,22 @@ export async function POST(request: Request) {
       if (chat.userId !== session.user.id) {
         return new ChatSDKError("forbidden:chat").toResponse();
       }
-      // Only fetch messages if chat already exists
       messagesFromDb = await getMessagesByChatId({ id });
     } else {
-      const title = await generateTitleFromUserMessage({
-        message,
-      });
-
+      const title = await generateTitleFromUserMessage({ message });
       await saveChat({
         id,
         userId: session.user.id,
         title,
         visibility: selectedVisibilityType,
       });
-      // New chat - no need to fetch messages, it's empty
     }
 
     const uiMessages = [...convertToUIMessages(messagesFromDb), message];
 
     const { longitude, latitude, city, country } = geolocation(request);
 
-    const requestHints: RequestHints = {
-      longitude,
-      latitude,
-      city,
-      country,
-    };
+    const requestHints: RequestHints = { longitude, latitude, city, country };
 
     await saveMessages({
       messages: [
@@ -198,10 +202,7 @@ export async function POST(request: Request) {
             getWeather,
             createDocument: createDocument({ session, dataStream }),
             updateDocument: updateDocument({ session, dataStream }),
-            requestSuggestions: requestSuggestions({
-              session,
-              dataStream,
-            }),
+            requestSuggestions: requestSuggestions({ session, dataStream }),
           },
           experimental_telemetry: {
             isEnabled: isProductionEnvironment,
@@ -212,24 +213,11 @@ export async function POST(request: Request) {
               const providers = await getTokenlensCatalog();
               const modelId =
                 myProvider.languageModel(selectedChatModel).modelId;
-              if (!modelId) {
+              if (!modelId || !providers) {
                 finalMergedUsage = usage;
-                dataStream.write({
-                  type: "data-usage",
-                  data: finalMergedUsage,
-                });
+                dataStream.write({ type: "data-usage", data: finalMergedUsage });
                 return;
               }
-
-              if (!providers) {
-                finalMergedUsage = usage;
-                dataStream.write({
-                  type: "data-usage",
-                  data: finalMergedUsage,
-                });
-                return;
-              }
-
               const summary = getUsage({ modelId, usage, providers });
               finalMergedUsage = { ...usage, ...summary, modelId } as AppUsage;
               dataStream.write({ type: "data-usage", data: finalMergedUsage });
@@ -242,12 +230,7 @@ export async function POST(request: Request) {
         });
 
         result.consumeStream();
-
-        dataStream.merge(
-          result.toUIMessageStream({
-            sendReasoning: true,
-          })
-        );
+        dataStream.merge(result.toUIMessageStream({ sendReasoning: true }));
       },
       generateId: generateUUID,
       onFinish: async ({ messages }) => {
@@ -273,20 +256,8 @@ export async function POST(request: Request) {
           }
         }
       },
-      onError: () => {
-        return "Oops, an error occurred!";
-      },
+      onError: () => "Oops, an error occurred!",
     });
-
-    // const streamContext = getStreamContext();
-
-    // if (streamContext) {
-    //   return new Response(
-    //     await streamContext.resumableStream(streamId, () =>
-    //       stream.pipeThrough(new JsonToSseTransformStream())
-    //     )
-    //   );
-    // }
 
     return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
   } catch (error) {
@@ -296,7 +267,6 @@ export async function POST(request: Request) {
       return error.toResponse();
     }
 
-    // Check for Vercel AI Gateway credit card error
     if (
       error instanceof Error &&
       error.message?.includes(
@@ -334,32 +304,4 @@ export async function DELETE(request: Request) {
   const deletedChat = await deleteChatById({ id });
 
   return Response.json(deletedChat, { status: 200 });
-}
-
-
-const { message, id } = requestBody;
-
-// Convert user message to lowercase
-const lower = message.content?.toLowerCase?.() ?? "";
-
-// If the user asks for your name, respond via the stream
-if (
-  lower.includes("who are you") ||
-  lower.includes("what is your name") ||
-  lower.includes("identify yourself") ||
-  lower.includes("introduce yourself")
-) {
-  // Create a simple stream that just outputs "I am Sixty4."
-  const stream = createUIMessageStream({
-    execute: async ({ writer }) => {
-      writer.write({
-        role: "assistant",
-        parts: ["I am Sixty4."],
-        id: crypto.randomUUID(),
-      });
-    },
-    generateId: () => crypto.randomUUID(),
-  });
-
-  return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
 }
