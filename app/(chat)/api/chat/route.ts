@@ -337,27 +337,29 @@ export async function DELETE(request: Request) {
 }
 
 
-try {
-  const json = await request.json();
-  requestBody = postRequestBodySchema.parse(json);
+const { message, id } = requestBody;
 
-  const { message } = requestBody;
+// Convert user message to lowercase
+const lower = message.content?.toLowerCase?.() ?? "";
 
-  // -------------------------------
-  // NEW: intercept "who are you" questions
-  const lower = message.content?.toLowerCase?.() ?? "";
-  if (
-    lower.includes("who are you") ||
-    lower.includes("what is your name") ||
-    lower.includes("identify yourself") ||
-    lower.includes("introduce yourself")
-  ) {
-    return new Response(
-      JSON.stringify({ reply: "I am Sixty4." }),
-      { status: 200 }
-    );
-  }
-  // -------------------------------
-} catch (_) {
-  return new ChatSDKError("bad_request:api").toResponse();
+// If the user asks for your name, respond via the stream
+if (
+  lower.includes("who are you") ||
+  lower.includes("what is your name") ||
+  lower.includes("identify yourself") ||
+  lower.includes("introduce yourself")
+) {
+  // Create a simple stream that just outputs "I am Sixty4."
+  const stream = createUIMessageStream({
+    execute: async ({ writer }) => {
+      writer.write({
+        role: "assistant",
+        parts: ["I am Sixty4."],
+        id: crypto.randomUUID(),
+      });
+    },
+    generateId: () => crypto.randomUUID(),
+  });
+
+  return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
 }
